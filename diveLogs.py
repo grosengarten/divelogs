@@ -1,24 +1,26 @@
 from datetime import datetime, timedelta
+from re import sub
+import xml.etree.ElementTree as ET
 
-filename='source_dive_84.ATOM 3.0.8148.zxu'
-
+filename='Greg Rosengarten_84.ATOM 3.0.8148.zxu'
 
 def convert_elapsed_times(increment):
     """
     converts elapsed times to correct format
     i.e.  "4.5" minutes.  WTF is that??!
     """
-    #dateObj, increment
     delta = increment.split('.')
     min=delta[0]
     sec='{0:g}'.format(int(delta[1]) / 100 * 60) # e.g. convert .50 minutes to seconds, then strip off the trailing zero created by casting to an integer < 0. YUCK!
     elapsedTime = min + ':' + sec
-    #absoluteTime = dateObj + timedelta(minutes=int(min), seconds=int(sec))
     #print(min, sec, absoluteTime)
     return elapsedTime
 
 
 def get_section_header(filename, start):
+    """
+    get header data associated with each section ZDH{ZDH} and ZDP{ZDP}
+    """
     with open(filename, 'r') as file:
         for line in file:
             if not line.startswith(start):
@@ -29,7 +31,10 @@ def get_section_header(filename, start):
     return data
 
 
-def load_sections(filename, start, end):
+def load_sections(filename, start, end, _split=True):
+    """
+    find the second of the file starting with (TAG){ and ending with (TAG)}
+    """
     data=[]
     with open(filename, 'r') as file:
         copy = False
@@ -40,47 +45,111 @@ def load_sections(filename, start, end):
                 copy = False
             elif copy:
                 line = line.strip()
-                data.append(line.split('|'))
+                if _split:
+                    data.append(line.split('|'))
+                else:
+                    data.append(line)
     return data
 
 
 def create_profile():
     """
-    ZDH|84|1|I|Q30S|20151011094900|58|120.0|PO2|
-    |2.00|89||1.11||||||3275|
-    Elapsed Dive Time (hr:min),Depth(FT),Nitrogen Bar Graph,Oxygen Bar Graph,Ascent Rate(FPM),Air Time Remaining,Dive Time Remaining,Deco Time (hr:min),Stop Depth(FT),Temperature(FT),PO2,Tank,Pressure Reading(PSI),Link Status,Dive Status
-    00:00:00,9,0,0,(0-10),01:31,09:59,00:00,0,58,0.38,1,3455,Linked,,0.0
-    "66","2016-04-23","13:45:00","0:30","1.962","11.111",
+    Create the lines that will go into the dive_profile csv
     """
-    header="dive number","date","time","sample time","sample depth","sample temperature","sample pressure"
-    source_header=get_section_header(filename, 'ZDH')
-    #print(source_header[5])
+    global temp # temp is written to the source file only when it changes.
+    header = "dive number","date","time","sample time","sample depth","sample temperature","sample pressure"
+    print(', '.join(header))
+    source_header = get_section_header(filename, 'ZDH')
     d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
-    date=d.strftime("%Y-%m-%d")
-    #print(source_header)
-    list=load_sections(filename, 'ZDP{', 'ZDP}')
-    #print(header)
-    for i in list:
-        global temp = i[7]
+    date = d.strftime("%Y-%m-%d")
+    #date = d.strftime("%m/%d/%Y")
+    list = load_sections(filename, 'ZDP{', 'ZDP}')
+    outputFile = 'dive_{0}_profile_{1}.csv'.format(source_header[1], date)
+    print(outputFile)
+    with open(outputFile, 'w') as f:
+        f.write(', '.join(header) + '\n')
+        for i in list:
+            line=[]
+            """ dive number """
+            line.append(source_header[1])
+            """ date """
+            line.append(date)
+            """ time """
+            line.append(d.strftime('%H:%M:%S'))
+            """ sample time """
+            line.append(convert_elapsed_times(i[1]))
+            """ sample depth """
+            line.append(i[2])
+            """ temp """
+            try:
+                if i[8] != "":
+                    temp = i[8]
+            except IndexError:
+                temp = source_header[6]
+            finally:
+                line.append(temp)
+            """ sample pressure """
+            try:
+                line.append(str(float(i[10])/14.7))
+            except IndexError:
+                line.append("")
 
-        print(i[1])
-        #delta = datetime.strptime(list[0], '%H:%M:%S')
-        #adjTime = d + timedelta(delta)
-        line=[]
+            print(', '.join(line))
+            f.write(', '.join(line) + '\n')
+    return line
+
+def create_details():
+    """
+    parse xml portions found in between the ZAR{ } tag
+    :return:
+    """
+    line = []
+    #header = "dive number", "date", "time", "location", "air temp", "Start Pressure", "End Pressure", "O2", "CYL. Size"
+    header = "dive number", "date", "time", "location", "air temp", "O2", "CYL. Size", "Weight", "Suit"
+    print(header)
+    source_header = get_section_header(filename, 'ZDH')
+    d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
+    date = d.strftime("%Y-%m-%d")
+    time = d.strftime('%H:%M:%S')
+    xml = load_sections(filename, 'ZAR{', '}', _split=False)
+    outputFile = 'dive_{0}_details_{1}.csv'.format(source_header[1], date)
+    with open(outputFile, 'w') as f:
+        """ dive number """
         line.append(source_header[1])
+        """ date and time """
+        d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
         line.append(date)
-        #line.append(adjTime)
-        line.append(d.strftime('%H:%M:%S'))
-        line.append(convert_elapsed_times(i[1]))
+        line.append(time)
+        E = ET.fromstring('\n'.join(xml))
+        """ location """
+        loc = dict(l.split("=") for l in E.find('LOCATION').text.split(","))
+        line.append(loc['LOCNAME'].replace('[','').replace(']','') + '- '+ loc['DIVESITE'].replace('[','').replace(']',''))
+        line.append(loc['AIRTEMP'])
+        """ tank """
+        tank = dict(l.split("=") for l in E.find('TANK').text.split(","))
+        #line.append(float(tank['STARTPRESSURE']/14.7))
+        #line.append(float(tank['ENDPRESSURE']/14.7))
+        print(tank)
+        line.append(tank['FO2'])
+        line.append(tank['CYLSIZE'])
+        """ gear """
+        gear = dict(l.split("=") for l in E.find('GEAR').text.split(","))
         try:
-            line.append(i[7])
-        except IndexError:
-            line.append(source_header[6])
-        print(line)
-
+            line.append(gear['INTERGRATEDWEIGHT'])
+        except Exception:
+            line.append('0')
+        try:
+            line.append(gear['SUIT'].replace('[','').replace(']',''))
+        except Exception:
+            line.append('')
+        #print(gear)
+        f.write(', '.join(header) + "\n")
+        f.write(', '.join(line) + "\n")
+    print(line)
+    return line
 
 def main():
     create_profile()
-    #convert_relative_times()
+    create_details()
 
 main()
