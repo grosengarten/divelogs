@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
 from re import sub
 import xml.etree.ElementTree as ET
+from sys import argv
 
-filename='Greg Rosengarten_84.ATOM 3.0.8148.zxu'
+
+filename=argv[1]
 
 def convert_elapsed_times(increment):
     """
@@ -37,13 +39,13 @@ def load_sections(filename, start, end, _split=True):
     """
     data=[]
     with open(filename, 'r') as file:
-        copy = False
+        select = False
         for line in file:
             if line.strip() == start:
-                copy = True
+                select = True
             elif line.strip() == end:
-                copy = False
-            elif copy:
+                select = False
+            elif select:
                 line = line.strip()
                 if _split:
                     data.append(line.split('|'))
@@ -57,25 +59,33 @@ def create_profile():
     Create the lines that will go into the dive_profile csv
     """
     global temp # temp is written to the source file only when it changes.
-    header = "dive number","date","time","sample time","sample depth","sample temperature","sample pressure"
+    header = "dive number","date","time", "duration","sample time","sample depth","sample temperature","sample pressure"
     print(', '.join(header))
+    xml = load_sections(filename, 'ZAR{', '}', _split=False)
+    E = ET.fromstring('\n'.join(xml))
+    stats = dict(l.split("=") for l in E.find('DIVESTATS').text.split(","))
+    dive_number = stats['DIVENO']
+    duration = '{0:g}'.format(int(stats['EDT'])/100)
     source_header = get_section_header(filename, 'ZDH')
     d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
-    date = d.strftime("%Y-%m-%d")
-    #date = d.strftime("%m/%d/%Y")
+    date = d.strftime("%d.%m.%Y")
     list = load_sections(filename, 'ZDP{', 'ZDP}')
     outputFile = 'dive_{0}_profile_{1}.csv'.format(source_header[1], date)
-    print(outputFile)
+    #print(outputFile)
     with open(outputFile, 'w') as f:
         f.write(', '.join(header) + '\n')
         for i in list:
             line=[]
             """ dive number """
-            line.append(source_header[1])
+            print(dive_number)
+            line.append(dive_number)
             """ date """
             line.append(date)
             """ time """
             line.append(d.strftime('%H:%M:%S'))
+            """ duration """
+            print(duration)
+            line.append(duration)
             """ sample time """
             line.append(convert_elapsed_times(i[1]))
             """ sample depth """
@@ -94,7 +104,7 @@ def create_profile():
             except IndexError:
                 line.append("")
 
-            print(', '.join(line))
+            #print(', '.join(line))
             f.write(', '.join(line) + '\n')
     return line
 
@@ -105,26 +115,38 @@ def create_details():
     """
     line = []
     #header = "dive number", "date", "time", "location", "air temp", "Start Pressure", "End Pressure", "O2", "CYL. Size"
-    header = "dive number", "date", "time", "location", "air temp", "O2", "CYL. Size", "Weight", "Suit"
+    header = "dive number", "date", "time", "duration","location", "air temp", "O2", "CYL. Size", "Weight", "Suit"
     print(header)
     source_header = get_section_header(filename, 'ZDH')
     d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
     date = d.strftime("%Y-%m-%d")
     time = d.strftime('%H:%M:%S')
     xml = load_sections(filename, 'ZAR{', '}', _split=False)
+    E = ET.fromstring('\n'.join(xml))
+    stats = dict(l.split("=") for l in E.find('DIVESTATS').text.split(","))
+    dive_number = stats['DIVENO']
+    duration = '{0:g}'.format(int(stats['EDT']) / 100)
     outputFile = 'dive_{0}_details_{1}.csv'.format(source_header[1], date)
     with open(outputFile, 'w') as f:
         """ dive number """
-        line.append(source_header[1])
+        line.append(dive_number)
         """ date and time """
         d = datetime.strptime(source_header[5], '%Y%m%d%H%M%S')
         line.append(date)
         line.append(time)
         E = ET.fromstring('\n'.join(xml))
+        """ duration """
+        line.append(duration)
         """ location """
         loc = dict(l.split("=") for l in E.find('LOCATION').text.split(","))
-        line.append(loc['LOCNAME'].replace('[','').replace(']','') + '- '+ loc['DIVESITE'].replace('[','').replace(']',''))
-        line.append(loc['AIRTEMP'])
+        try:
+            line.append(loc['LOCNAME'].replace('[','').replace(']','') + '- '+ loc['DIVESITE'].replace('[','').replace(']',''))
+        except KeyError:
+            line.append("")
+        try:
+            line.append(loc['AIRTEMP'])
+        except KeyError:
+            line.append("")
         """ tank """
         tank = dict(l.split("=") for l in E.find('TANK').text.split(","))
         #line.append(float(tank['STARTPRESSURE']/14.7))
@@ -145,7 +167,7 @@ def create_details():
         #print(gear)
         f.write(', '.join(header) + "\n")
         f.write(', '.join(line) + "\n")
-    print(line)
+    #print(line)
     return line
 
 def main():
